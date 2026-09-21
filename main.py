@@ -261,6 +261,26 @@ def nota_coincide(nota_detectada, nota_esperada, tolerancia_semitonos=0):
 
 
 # =====================================================================
+#  NOTACIÓN: nombres de nota en notación inglesa vs. solfeo (Do-Re-Mi)
+# =====================================================================
+
+_LETRA_A_SOLFEO = {"C": "Do", "D": "Re", "E": "Mi", "F": "Fa", "G": "Sol", "A": "La", "B": "Si"}
+
+
+def nombre_para_mostrar(nombre_nota, usar_solfeo):
+    """
+    Convierte 'E4' -> 'Mi4', 'F#4' -> 'Fa#4', etc. Si usar_solfeo es False,
+    devuelve el nombre tal cual (notación inglesa, la que usa music21/librosa
+    internamente para todas las comparaciones).
+    """
+    if not usar_solfeo or not nombre_nota:
+        return nombre_nota
+    letra = nombre_nota[0]
+    resto = nombre_nota[1:]  # alteración (# / -) y octava, se mantienen igual
+    return _LETRA_A_SOLFEO.get(letra, letra) + resto
+
+
+# =====================================================================
 #  DIBUJO DEL PENTAGRAMA
 # =====================================================================
 
@@ -509,7 +529,7 @@ ScreenManager:
                 radius: [15, 15, 15, 15]
 
                 MDLabel:
-                    text: "Tocar a mi\\nritmo (sin tempo)"
+                    text: "Ver notas en\\nDo-Re-Mi"
                     halign: "center"
                     theme_text_color: "Custom"
                     text_color: 1, 1, 1, 1
@@ -518,8 +538,8 @@ ScreenManager:
                     size_hint: None, None
                     size: "48dp", "48dp"
                     pos_hint: {'center_x': .5, 'center_y': .5}
-                    active: app.modo_libre
-                    on_active: app.modo_libre = self.active
+                    active: app.notacion_solfeo
+                    on_active: app.notacion_solfeo = self.active
 
             MDCard:
                 orientation: 'vertical'
@@ -529,7 +549,6 @@ ScreenManager:
                 line_color: 1, 1, 1, 1
                 padding: "10dp"
                 radius: [15, 15, 15, 15]
-                opacity: 0.4 if app.modo_libre else 1
 
                 MDLabel:
                     text: "Tempo\\nBPM"
@@ -545,7 +564,6 @@ ScreenManager:
                         icon: "arrow-left-bold"
                         theme_icon_color: "Custom"
                         icon_color: 0.5, 0.8, 0.2, 1
-                        disabled: app.modo_libre
                         on_release: app.cambiar_bpm(-5)
                     MDLabel:
                         text: str(app.bpm)
@@ -558,7 +576,6 @@ ScreenManager:
                         icon: "arrow-right-bold"
                         theme_icon_color: "Custom"
                         icon_color: 0.5, 0.8, 0.2, 1
-                        disabled: app.modo_libre
                         on_release: app.cambiar_bpm(5)
 
         MDFloatLayout:
@@ -737,7 +754,7 @@ class InterpreteScreen(Screen):
 class WynikApp(MDApp):
     bpm = NumericProperty(120)
     seguir_de_largo = BooleanProperty(True)
-    modo_libre = BooleanProperty(False)
+    notacion_solfeo = BooleanProperty(False)
     notas_partitura = ListProperty([])
     estado_notas = ListProperty([])
     nombre_partitura = StringProperty("(Sin partitura)")
@@ -959,17 +976,27 @@ class WynikApp(MDApp):
 
         nota_info = self.notas_partitura[self.indice_actual]
         self.nota_esperada = nota_info["nombre"]
-        self._actualizar_label_estado(f"Nota esperada: {self.nota_esperada}", (0, 0, 0, 1))
+        nombre_mostrado = nombre_para_mostrar(self.nota_esperada, self.notacion_solfeo)
+        self._actualizar_label_estado(f"Nota esperada: {nombre_mostrado}", (0, 0, 0, 1))
 
-        segundos_por_beat = 60.0 / self.bpm
-        duracion_segundos = max(nota_info["duracion_beats"] * segundos_por_beat, 0.15)
-        Clock.schedule_once(self._siguiente_nota, duracion_segundos)
+        if self.seguir_de_largo:
+            # "Seguir de largo al fallar" ACTIVO: la partitura avanza sola según el tempo,
+            # sin importar si tocaste bien o mal la nota anterior.
+            segundos_por_beat = 60.0 / self.bpm
+            duracion_segundos = max(nota_info["duracion_beats"] * segundos_por_beat, 0.15)
+            Clock.schedule_once(self._siguiente_nota, duracion_segundos)
+        # Si está DESACTIVADO, no programamos ningún avance por tiempo: la partitura se
+        # queda esperando aquí hasta que detectemos la nota correcta (ver _procesar_nota_detectada).
 
-    def _siguiente_nota(self, dt):
-        if self.indice_actual < len(self.estado_notas) and self.estado_notas[self.indice_actual] is None:
-            self._marcar_estado_nota(self.indice_actual, False)
+    def _avanzar(self):
         self.indice_actual += 1
         self._mostrar_nota_actual()
+
+    def _siguiente_nota(self, dt):
+        # Solo se llama vía Clock cuando seguir_de_largo está activo.
+        if self.indice_actual < len(self.estado_notas) and self.estado_notas[self.indice_actual] is None:
+            self._marcar_estado_nota(self.indice_actual, False)  # se pasó el tiempo sin tocarla (o la tocó mal)
+        self._avanzar()
 
     def _marcar_estado_nota(self, indice, es_correcta):
         if indice >= len(self.estado_notas):
@@ -985,11 +1012,20 @@ class WynikApp(MDApp):
         es_correcta = bool(self.nota_esperada and nota_coincide(nombre_nota, self.nota_esperada))
         self._marcar_estado_nota(self.indice_actual, es_correcta)
 
+        nombre_tocado = nombre_para_mostrar(nombre_nota, self.notacion_solfeo)
+        nombre_esperado = nombre_para_mostrar(self.nota_esperada, self.notacion_solfeo)
+
         if es_correcta:
-            self._actualizar_label_estado(f"✓ {nombre_nota} correcta", (0.2, 0.7, 0.2, 1))
+            self._actualizar_label_estado(f"✓ {nombre_tocado} correcta", (0.2, 0.7, 0.2, 1))
+            if not self.seguir_de_largo:
+                # Con "seguir de largo" DESACTIVADO, tocar la nota correcta es lo único
+                # que hace avanzar la partitura (se frena hasta que aciertas).
+                self._avanzar()
         else:
-            texto = f"✗ tocaste {nombre_nota}, esperada {self.nota_esperada}"
+            texto = f"✗ tocaste {nombre_tocado}, esperada {nombre_esperado}"
             self._actualizar_label_estado(texto, (0.8, 0.1, 0.1, 1))
+            # Con "seguir de largo" desactivado, simplemente no avanzamos: se queda
+            # esperando en la misma nota hasta que la toques bien.
 
     def _actualizar_label_estado(self, texto, color):
         pantalla = self.root.get_screen('interprete')
