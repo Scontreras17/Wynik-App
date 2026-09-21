@@ -1,20 +1,29 @@
 import json
 import os
+import struct
+import wave
 
 import numpy as np
 import sounddevice as sd
 import librosa
+
 from music21 import converter, note, chord
 
 from kivy.clock import Clock
+from kivy.core.audio import SoundLoader
 from kivy.graphics import Color, Ellipse, Line
 from kivy.lang import Builder
 from kivy.properties import BooleanProperty, ListProperty, NumericProperty, StringProperty
 from kivy.core.window import Window
 from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.uix.widget import Widget
+from kivy.uix.modalview import ModalView
+from kivy.uix.filechooser import FileChooserListView
+from kivy.uix.boxlayout import BoxLayout
 
 from kivymd.app import MDApp
+from kivymd.uix.button import MDButton, MDButtonText, MDIconButton
+from kivymd.uix.slider import MDSlider
 from kivymd.uix.list import (
     MDListItem,
     MDListItemHeadlineText,
@@ -27,13 +36,63 @@ Window.size = (360, 640)
 
 
 # =====================================================================
-#  PARTE 1: Carga de partituras en MusicXML  (antes: musicxml_loader.py)
+#  SINTETIZADOR Y CARGA DE PARTITURAS
 # =====================================================================
+
+def generar_audio_guia(notas_partitura, bpm, ruta_salida="temp_guia.wav", sample_rate=22050):
+    """
+    Genera un archivo WAV de audio síntesis temporal a partir de las notas de la partitura.
+    """
+    if not notas_partitura:
+        return None
+
+    segundos_por_beat = 60.0 / max(bpm, 1)
+    duracion_total_beats = sum(n["duracion_beats"] for n in notas_partitura)
+    total_samples = int(duracion_total_beats * segundos_por_beat * sample_rate)
+
+    if total_samples <= 0:
+        return None
+
+    buffer_audio = np.zeros(total_samples, dtype=np.float32)
+    sample_actual = 0
+
+    for item in notas_partitura:
+        duracion_sec = item["duracion_beats"] * segundos_por_beat
+        num_samples = int(duracion_sec * sample_rate)
+
+        try:
+            freq = librosa.note_to_hz(item["nombre"])
+            t = np.linspace(0, duracion_sec, num_samples, False)
+            # Genera tono senoidal suave con desvanecimiento gradual (decay)
+            onda = 0.5 * np.sin(2 * np.pi * freq * t) * np.exp(-3 * t / max(duracion_sec, 0.001))
+        except Exception:
+            onda = np.zeros(num_samples)
+
+        fin_sample = min(sample_actual + num_samples, total_samples)
+        len_copia = fin_sample - sample_actual
+        if len_copia > 0:
+            buffer_audio[sample_actual:fin_sample] += onda[:len_copia]
+        sample_actual = fin_sample
+
+    # Normalización para evitar saturación
+    max_val = np.max(np.abs(buffer_audio))
+    if max_val > 1.0:
+        buffer_audio = buffer_audio / max_val
+
+    buffer_int16 = (buffer_audio * 32767).astype(np.int16)
+
+    with wave.open(ruta_salida, 'w') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(buffer_int16.tobytes())
+
+    return ruta_salida
+
 
 def cargar_partitura(ruta_archivo):
     """
-    Lee un archivo MusicXML y devuelve una lista de diccionarios:
-    [{"nombre": "E4", "offset_beats": 0.0, "duracion_beats": 1.0}, ...]
+    Lee un archivo MusicXML y devuelve una lista de diccionarios con las notas.
     """
     partitura = converter.parse(ruta_archivo)
     notas_planas = partitura.flatten().notes
@@ -58,31 +117,52 @@ def cargar_partitura(ruta_archivo):
 
 def abrir_selector_de_archivo(callback_ruta_seleccionada):
     """
-    Abre el explorador de archivos nativo filtrado a MusicXML.
-    `callback_ruta_seleccionada` recibe la ruta (str) elegida, o None si se cancela.
+    Selector de archivos multiplataforma basado en Kivy.
     """
-    from plyer import filechooser
+    popup = ModalView(size_hint=(0.95, 0.85), auto_dismiss=False)
+    layout = BoxLayout(orientation='vertical', padding='10dp', spacing='10dp')
 
-    def _on_selection(seleccion):
+    filechooser = FileChooserListView(
+        filters=['*.xml', '*.musicxml', '*.mxl'],
+        path=os.path.expanduser("~")
+    )
+
+    btn_layout = BoxLayout(size_hint_y=None, height='48dp', spacing='10dp')
+
+    def _cancelar(instance):
+        popup.dismiss()
+        callback_ruta_seleccionada(None)
+
+    def _seleccionar(instance):
+        seleccion = filechooser.selection
         ruta = seleccion[0] if seleccion else None
+        popup.dismiss()
         callback_ruta_seleccionada(ruta)
 
-    filechooser.open_file(
-        title="Selecciona una partitura MusicXML",
-        filters=[("MusicXML", "*.xml", "*.musicxml", "*.mxl")],
-        on_selection=_on_selection,
-    )
+    btn_cancelar = MDButton(on_release=_cancelar)
+    btn_cancelar.add_widget(MDButtonText(text="Cancelar"))
+
+    btn_aceptar = MDButton(on_release=_seleccionar)
+    btn_aceptar.add_widget(MDButtonText(text="Seleccionar"))
+
+    btn_layout.add_widget(btn_cancelar)
+    btn_layout.add_widget(btn_aceptar)
+
+    layout.add_widget(filechooser)
+    layout.add_widget(btn_layout)
+
+    popup.add_widget(layout)
+    popup.open()
 
 
 # =====================================================================
-#  PARTE 1.5: Historial de partituras subidas (persistente entre sesiones)
+#  HISTORIAL DE PARTITURAS
 # =====================================================================
 
 HISTORIAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "historial_partituras.json")
 
 
 def cargar_historial():
-    """Lee el historial guardado en disco. Si no existe o está dañado, devuelve una lista vacía."""
     if os.path.exists(HISTORIAL_PATH):
         try:
             with open(HISTORIAL_PATH, "r", encoding="utf-8") as archivo:
@@ -98,7 +178,7 @@ def guardar_historial(historial):
 
 
 # =====================================================================
-#  PARTE 2: Detección de notas por micrófono  (antes: pitch_listener.py)
+#  DETECCIÓN DE NOTAS POR MICRÓFONO
 # =====================================================================
 
 SAMPLE_RATE = 22050
@@ -106,7 +186,6 @@ BLOCK_SIZE = 2048
 
 
 def frecuencia_a_nota(frecuencia_hz):
-    """Convierte una frecuencia en Hz al nombre de nota más cercano (ej: 'A4')."""
     if frecuencia_hz is None or frecuencia_hz <= 0 or np.isnan(frecuencia_hz):
         return None
     midi = librosa.hz_to_midi(frecuencia_hz)
@@ -114,26 +193,15 @@ def frecuencia_a_nota(frecuencia_hz):
 
 
 class MicrofonoNoDisponibleError(Exception):
-    """Se lanza cuando no se pudo abrir ningún micrófono (dispositivo ocupado,
-    permisos de Windows denegados, sample rate no soportado, etc.)."""
     pass
 
 
 class DetectorDeNotas:
-    """
-    Escucha el micrófono en un hilo aparte y llama a `callback_nota(nombre, frecuencia)`
-    cada vez que detecta una nota distinta a la anterior.
-
-    IMPORTANTE: el callback se dispara desde el hilo de audio, NO desde el hilo
-    principal de Kivy — por eso en WynikApp._nota_detectada lo reenviamos con
-    Clock.schedule_once antes de tocar cualquier cosa de la interfaz.
-    """
-
     def __init__(self, callback_nota, device=None):
         self.callback_nota = callback_nota
-        self.device = device  # None = usar el micrófono por defecto de Windows
+        self.device = device
         self.stream = None
-        self.samplerate = SAMPLE_RATE  # se ajusta en iniciar() al valor real del dispositivo
+        self.samplerate = SAMPLE_RATE
         self._ultima_nota = None
 
     def _procesar_bloque(self, indata, frames, time_info, status):
@@ -160,8 +228,6 @@ class DetectorDeNotas:
 
     def iniciar(self):
         try:
-            # Le preguntamos al propio dispositivo cuál es SU sample rate nativo
-            # en vez de forzar uno fijo (22050 Hz suele fallar con drivers MME en Windows).
             info_dispositivo = sd.query_devices(self.device, 'input')
             self.samplerate = int(info_dispositivo['default_samplerate'])
 
@@ -176,9 +242,7 @@ class DetectorDeNotas:
         except Exception as error:
             self.stream = None
             raise MicrofonoNoDisponibleError(
-                f"No se pudo abrir el micrófono ({error}). "
-                f"Revisa los permisos de micrófono de Windows o si otra app "
-                f"(Zoom, Discord, etc.) lo está usando en modo exclusivo."
+                f"No se pudo abrir el micrófono ({error})."
             ) from error
 
     def detener(self):
@@ -189,7 +253,6 @@ class DetectorDeNotas:
 
 
 def nota_coincide(nota_detectada, nota_esperada, tolerancia_semitonos=0):
-    """Compara la nota detectada contra la esperada por la partitura."""
     if nota_detectada is None:
         return False
     midi_detectada = round(librosa.note_to_midi(nota_detectada))
@@ -198,39 +261,24 @@ def nota_coincide(nota_detectada, nota_esperada, tolerancia_semitonos=0):
 
 
 # =====================================================================
-#  PARTE 2.5: Dibujo del pentagrama con las notas (nuevo)
+#  DIBUJO DEL PENTAGRAMA
 # =====================================================================
 
 _LETRA_A_PASO = {"C": 0, "D": 1, "E": 2, "F": 3, "G": 4, "A": 5, "B": 6}
 
 
 def paso_diatonico(nombre_nota):
-    """
-    Convierte un nombre de nota tipo 'E4', 'F#4' o 'Bb3' en un número entero
-    que representa su altura "diatónica" (ignora sostenidos/bemoles para la
-    posición vertical en el pentagrama — solo importa la letra + la octava).
-    """
     letra = nombre_nota[0]
     octava = int(nombre_nota[-1])
     return octava * 7 + _LETRA_A_PASO[letra]
 
 
-PASO_E4 = paso_diatonico("E4")  # línea inferior del pentagrama en clave de sol
+PASO_E4 = paso_diatonico("E4")
 
 
 class PartituraWidget(Widget):
-    """
-    Dibuja un pentagrama simple con un tramo de la partitura actual.
-    Colorea cada nota según app.estado_notas:
-        None  -> negro   (todavía no se evaluó)
-        True  -> verde   (se tocó correctamente)
-        False -> rojo    (se tocó mal, o se pasó de largo sin tocarla)
-    La nota que está sonando "ahora" (app.indice_actual) se marca en azul
-    mientras no tenga un resultado todavía.
-    """
-
     NOTAS_VISIBLES = 8
-    ESPACIO_ENTRE_LINEAS = 14  # separación vertical entre líneas del pentagrama, en px
+    ESPACIO_ENTRE_LINEAS = 14
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -245,7 +293,6 @@ class PartituraWidget(Widget):
         centro_y = self.center_y
 
         with self.canvas:
-            # --- Las 5 líneas del pentagrama ---
             Color(0, 0, 0, 1)
             for i in range(5):
                 y = centro_y + (i - 2) * self.ESPACIO_ENTRE_LINEAS
@@ -273,26 +320,25 @@ class PartituraWidget(Widget):
                 diferencia_pasos = paso - PASO_E4
                 y = centro_y + diferencia_pasos * (self.ESPACIO_ENTRE_LINEAS / 2)
 
-                # Líneas adicionales (ledger lines) si la nota queda fuera del pentagrama
                 if (diferencia_pasos % 2 == 0) and (y < y_min_pentagrama or y > y_max_pentagrama):
                     Color(0, 0, 0, 1)
                     Line(points=[x - 8, y, x + 8, y], width=1.2)
 
                 estado = app.estado_notas[indice_real] if indice_real < len(app.estado_notas) else None
                 if estado is True:
-                    Color(0.2, 0.7, 0.2, 1)      # correcta
+                    Color(0.2, 0.7, 0.2, 1)
                 elif estado is False:
-                    Color(0.85, 0.1, 0.1, 1)     # incorrecta / no tocada a tiempo
+                    Color(0.85, 0.1, 0.1, 1)
                 elif indice_real == app.indice_actual:
-                    Color(0.2, 0.45, 0.9, 1)     # sonando ahora, sin resultado aún
+                    Color(0.2, 0.45, 0.9, 1)
                 else:
-                    Color(0, 0, 0, 1)            # nota futura
+                    Color(0, 0, 0, 1)
 
                 Ellipse(pos=(x - 6, y - 5), size=(12, 10))
 
 
 # =====================================================================
-#  PARTE 3: La app Wynik en sí
+#  DISEÑO KV DE LA APLICACIÓN
 # =====================================================================
 
 KV = '''
@@ -534,24 +580,28 @@ ScreenManager:
     name: 'interprete'
     MDBoxLayout:
         orientation: 'vertical'
+        theme_bg_color: "Custom"
+        md_bg_color: 1, 1, 1, 1
 
         MDTopAppBar:
             type: "small"
             MDTopAppBarLeadingButtonContainer:
                 MDActionTopAppBarButton:
                     icon: "arrow-left"
-                    on_release: app.change_screen('ajustes_inicio')
+                    on_release:
+                        app.detener_audio()
+                        app.change_screen('ajustes_inicio')
             MDTopAppBarTitle:
                 text: app.nombre_partitura
 
-        MDFloatLayout:
-            theme_bg_color: "Custom"
-            md_bg_color: 1, 1, 1, 1
+        MDBoxLayout:
+            orientation: 'vertical'
+            padding: "10dp"
+            spacing: "5dp"
 
             PartituraWidget:
                 id: partitura_widget
-                size_hint: 0.95, 0.5
-                pos_hint: {"center_x": .5, "center_y": .6}
+                size_hint_y: 0.45
 
             MDLabel:
                 id: label_estado
@@ -560,9 +610,101 @@ ScreenManager:
                 theme_text_color: "Custom"
                 text_color: 0, 0, 0, 1
                 bold: True
-                size_hint: 0.9, None
-                height: "40dp"
-                pos_hint: {"center_x": .5, "y": 0.08}
+                size_hint_y: None
+                height: "30dp"
+
+            # --- Panel Multimedia de Control de Audio ---
+            MDBoxLayout:
+                orientation: 'vertical'
+                size_hint_y: None
+                height: "170dp"
+                padding: ["10dp", "5dp", "10dp", "5dp"]
+                spacing: "5dp"
+
+                # Línea de Progreso y Tiempo
+                MDBoxLayout:
+                    orientation: 'horizontal'
+                    size_hint_y: None
+                    height: "30dp"
+                    spacing: "5dp"
+
+                    MDLabel:
+                        text: app.tiempo_actual_str
+                        theme_text_color: "Custom"
+                        text_color: 0, 0, 0, 1
+                        size_hint_x: None
+                        width: "45dp"
+                        font_style: "Label"
+                        role: "small"
+
+                    MDSlider:
+                        id: slider_progreso
+                        min: 0
+                        max: app.duracion_audio_total if app.duracion_audio_total > 0 else 1
+                        value: app.posicion_audio_actual
+                        on_value: app.cambiar_posicion_audio(self.value)
+
+                    MDLabel:
+                        text: app.duracion_total_str
+                        theme_text_color: "Custom"
+                        text_color: 0, 0, 0, 1
+                        size_hint_x: None
+                        width: "45dp"
+                        font_style: "Label"
+                        role: "small"
+
+                # Botones de Control de Reproducción (-5s | Play/Pausa | Stop | +5s)
+                MDBoxLayout:
+                    orientation: 'horizontal'
+                    size_hint_y: None
+                    height: "60dp"
+                    spacing: "10dp"
+                    pos_hint: {"center_x": .5}
+
+                    Widget:
+                        size_hint_x: 0.1
+
+                    MDIconButton:
+                        icon: "rewind-5"
+                        style: "standard"
+                        on_release: app.adelantar_retroceder_audio(-5)
+
+                    MDIconButton:
+                        icon: "play" if not app.reproduciendo_audio else "pause"
+                        style: "filled"
+                        icon_size: "32sp"
+                        on_release: app.toggle_reproduccion_audio()
+
+                    MDIconButton:
+                        icon: "stop"
+                        style: "standard"
+                        on_release: app.detener_audio()
+
+                    MDIconButton:
+                        icon: "fast-forward-5"
+                        style: "standard"
+                        on_release: app.adelantar_retroceder_audio(5)
+
+                    Widget:
+                        size_hint_x: 0.1
+
+                # Slider de Volumen
+                MDBoxLayout:
+                    orientation: 'horizontal'
+                    size_hint_y: None
+                    height: "35dp"
+                    spacing: "5dp"
+
+                    MDIconButton:
+                        icon: "volume-high" if app.volumen_audio > 0 else "volume-off"
+                        style: "standard"
+                        icon_size: "20sp"
+
+                    MDSlider:
+                        min: 0.0
+                        max: 1.0
+                        value: app.volumen_audio
+                        on_value: app.ajustar_volumen(self.value)
 '''
 
 
@@ -583,17 +725,31 @@ class InterpreteScreen(Screen):
         MDApp.get_running_app().iniciar_escucha()
 
     def on_leave(self):
-        MDApp.get_running_app().detener_escucha()
+        app = MDApp.get_running_app()
+        app.detener_escucha()
+        app.detener_audio()
 
+
+# =====================================================================
+#  CLASE PRINCIPAL DE LA APLICACIÓN
+# =====================================================================
 
 class WynikApp(MDApp):
     bpm = NumericProperty(120)
     seguir_de_largo = BooleanProperty(True)
-    modo_libre = BooleanProperty(False)  # True = sin tempo, avanza cuando tocas la nota correcta
+    modo_libre = BooleanProperty(False)
     notas_partitura = ListProperty([])
-    estado_notas = ListProperty([])  # uno por nota: None=sin evaluar, True=correcta, False=incorrecta
+    estado_notas = ListProperty([])
     nombre_partitura = StringProperty("(Sin partitura)")
-    historial_partituras = ListProperty([])  # [{"nombre": ..., "ruta": ...}, ...]
+    historial_partituras = ListProperty([])
+
+    # Propiedades para el reproductor de audio
+    reproduciendo_audio = BooleanProperty(False)
+    volumen_audio = NumericProperty(0.8)
+    posicion_audio_actual = NumericProperty(0)
+    duracion_audio_total = NumericProperty(1)
+    tiempo_actual_str = StringProperty("00:00")
+    duracion_total_str = StringProperty("00:00")
 
     def build(self):
         self.theme_cls.theme_style = "Dark"
@@ -601,6 +757,8 @@ class WynikApp(MDApp):
         self.detector = None
         self.indice_actual = 0
         self.nota_esperada = None
+        self.sonido_guia = None
+        self._evento_actualizar_progreso = None
         self.historial_partituras = cargar_historial()
         return Builder.load_string(KV)
 
@@ -610,7 +768,7 @@ class WynikApp(MDApp):
     def change_screen(self, screen_name):
         self.root.current = screen_name
 
-    # ---------- Subir partitura (MusicXML) ----------
+    # ---------- Subir y cargar partitura ----------
 
     def subir_partitura(self):
         abrir_selector_de_archivo(self._partitura_seleccionada)
@@ -657,24 +815,111 @@ class WynikApp(MDApp):
             lista_widget.add_widget(item)
 
     def _elegir_partitura_del_historial(self, ruta, nombre):
+        if not os.path.exists(ruta):
+            print(f"[Wynik] El archivo no existe en esta ubicación: {ruta}")
+            return
         try:
             self.notas_partitura = cargar_partitura(ruta)
         except Exception as error:
-            print(f"[Wynik] No se pudo volver a abrir {ruta}: {error}")
+            print(f"[Wynik] No se pudo abrir {ruta}: {error}")
             return
         self.nombre_partitura = nombre
         self.root.current = 'ajustes_inicio'
 
-    # ---------- Tempo / ajustes ----------
+    # ---------- Configuración de Tempo ----------
 
     def cambiar_bpm(self, delta):
         self.bpm = max(40, min(240, self.bpm + delta))
 
-    # ---------- Reproducción / escucha ----------
+    # ---------- Control Multimedia y Sintetizador ----------
+
+    def preparar_audio_guia(self):
+        if self.sonido_guia:
+            self.sonido_guia.stop()
+            self.sonido_guia.unload()
+            self.sonido_guia = None
+
+        self.reproduciendo_audio = False
+        self.posicion_audio_actual = 0
+        self.tiempo_actual_str = "00:00"
+
+        ruta_wav = generar_audio_guia(self.notas_partitura, self.bpm)
+        if ruta_wav and os.path.exists(ruta_wav):
+            self.sonido_guia = SoundLoader.load(ruta_wav)
+            if self.sonido_guia:
+                self.sonido_guia.volume = self.volumen_audio
+                self.duracion_audio_total = self.sonido_guia.length or 1
+                self.duracion_total_str = self._formatear_tiempo(self.duracion_audio_total)
+
+    def toggle_reproduccion_audio(self):
+        if not self.sonido_guia:
+            self.preparar_audio_guia()
+
+        if self.sonido_guia:
+            if self.reproduciendo_audio:
+                self.sonido_guia.stop()
+                self.reproduciendo_audio = False
+                if self._evento_actualizar_progreso:
+                    self._evento_actualizar_progreso.cancel()
+                    self._evento_actualizar_progreso = None
+            else:
+                self.sonido_guia.play()
+                self.reproduciendo_audio = True
+                self._evento_actualizar_progreso = Clock.schedule_interval(self._actualizar_progreso_ui, 0.2)
+
+    def detener_audio(self):
+        if self.sonido_guia:
+            self.sonido_guia.stop()
+            self.sonido_guia.seek(0)
+        self.reproduciendo_audio = False
+        self.posicion_audio_actual = 0
+        self.tiempo_actual_str = "00:00"
+        if self._evento_actualizar_progreso:
+            self._evento_actualizar_progreso.cancel()
+            self._evento_actualizar_progreso = None
+
+    def adelantar_retroceder_audio(self, segundos):
+        if self.sonido_guia:
+            pos_actual = self.sonido_guia.get_pos()
+            nueva_pos = max(0, min(self.duracion_audio_total, pos_actual + segundos))
+            self.sonido_guia.seek(nueva_pos)
+            self.posicion_audio_actual = nueva_pos
+            self.tiempo_actual_str = self._formatear_tiempo(nueva_pos)
+
+    def cambiar_posicion_audio(self, nuevo_tiempo):
+        if self.sonido_guia and abs(self.sonido_guia.get_pos() - nuevo_tiempo) > 0.8:
+            self.sonido_guia.seek(nuevo_tiempo)
+            self.posicion_audio_actual = nuevo_tiempo
+            self.tiempo_actual_str = self._formatear_tiempo(nuevo_tiempo)
+
+    def ajustar_volumen(self, valor):
+        self.volumen_audio = valor
+        if self.sonido_guia:
+            self.sonido_guia.volume = valor
+
+    def _actualizar_progreso_ui(self, dt):
+        if self.sonido_guia and self.reproduciendo_audio:
+            pos = self.sonido_guia.get_pos()
+            if pos >= self.duracion_audio_total or (self.sonido_guia.state == 'stop' and pos > 0):
+                self.detener_audio()
+            else:
+                self.posicion_audio_actual = pos
+                self.tiempo_actual_str = self._formatear_tiempo(pos)
+
+    @staticmethod
+    def _formatear_tiempo(segundos):
+        if segundos is None or np.isnan(segundos) or segundos < 0:
+            return "00:00"
+        mins = int(segundos // 60)
+        secs = int(segundos % 60)
+        return f"{mins:02d}:{secs:02d}"
+
+    # ---------- Lógica de Interpretación ----------
 
     def iniciar_interpretacion(self):
         self.indice_actual = 0
         self.estado_notas = [None] * len(self.notas_partitura)
+        self.preparar_audio_guia()
 
     def iniciar_escucha(self):
         if not self.notas_partitura:
@@ -687,7 +932,7 @@ class WynikApp(MDApp):
         except MicrofonoNoDisponibleError as error:
             self.detector = None
             self._actualizar_label_estado("No se pudo abrir el micrófono", (1, 0.3, 0.3, 1))
-            print(f"[Wynik] {error}")  # detalle completo en la consola para depurar
+            print(f"[Wynik] {error}")
             return
 
         self._evento_refresco_visual = Clock.schedule_interval(self._refrescar_partitura_widget, 0.1)
@@ -722,7 +967,7 @@ class WynikApp(MDApp):
 
     def _siguiente_nota(self, dt):
         if self.indice_actual < len(self.estado_notas) and self.estado_notas[self.indice_actual] is None:
-            self._marcar_estado_nota(self.indice_actual, False)  # se pasó sin tocarla
+            self._marcar_estado_nota(self.indice_actual, False)
         self.indice_actual += 1
         self._mostrar_nota_actual()
 
@@ -731,7 +976,7 @@ class WynikApp(MDApp):
             return
         nuevos_estados = list(self.estado_notas)
         nuevos_estados[indice] = es_correcta
-        self.estado_notas = nuevos_estados  # reasignar la lista completa dispara el binding
+        self.estado_notas = nuevos_estados
 
     def _nota_detectada(self, nombre_nota, frecuencia):
         Clock.schedule_once(lambda dt: self._procesar_nota_detectada(nombre_nota))
