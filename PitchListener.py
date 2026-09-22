@@ -1,8 +1,7 @@
 """
 Escucha el micrófono en tiempo real y detecta qué nota está sonando.
 
-Instalación:
-    pip install sounddevice librosa numpy
+
 """
 
 import numpy as np
@@ -91,7 +90,8 @@ def nota_coincide(nota_detectada, nota_esperada, tolerancia_semitonos=0):
         return False
     midi_detectada = round(librosa.note_to_midi(nota_detectada))
     midi_esperada = round(librosa.note_to_midi(nota_esperada))
-    return abs(midi_detectada - midi_esperada) <= tolerancia_semitonos
+    
+    return (midi_detectada % 12) == (midi_esperada % 12)
 
 
 if __name__ == "__main__":

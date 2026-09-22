@@ -206,6 +206,29 @@ class DetectorDeNotas:
 
     def _procesar_bloque(self, indata, frames, time_info, status):
         audio = indata[:, 0]
+        # 1. Filtro de ruido un poco más estricto
+        rms = np.sqrt(np.mean(audio**2))
+        if rms < 0.234:  # Si sigue sensible, sube este valor a 0.08
+            self._ultima_nota = None
+            return
+
+        # 2. Detección instantánea con FFT (reemplaza a librosa.pyin)
+        fft_data = np.fft.rfft(audio)
+        fft_freqs = np.fft.rfftfreq(len(audio), 1.0 / self.samplerate)
+        magnitudes = np.abs(fft_data)
+        
+        # Ignorar frecuencias menores a 65Hz (ruido de fondo o golpes)
+        magnitudes[fft_freqs < 65.0] = 0 
+
+        peak_idx = np.argmax(magnitudes)
+        frecuencia = float(fft_freqs[peak_idx])
+
+        # 3. Validar que la frecuencia sea de un instrumento (C2 a C7 aprox)
+        if 65.0 < frecuencia < 2100.0:
+            nota = frecuencia_a_nota(frecuencia)
+            if nota and nota != self._ultima_nota:
+                self._ultima_nota = nota
+                self.callback_nota(nota, frecuencia)
 
         f0, voiced_flag, _ = librosa.pyin(
             audio,
@@ -257,7 +280,9 @@ def nota_coincide(nota_detectada, nota_esperada, tolerancia_semitonos=0):
         return False
     midi_detectada = round(librosa.note_to_midi(nota_detectada))
     midi_esperada = round(librosa.note_to_midi(nota_esperada))
-    return abs(midi_detectada - midi_esperada) <= tolerancia_semitonos
+    
+    # Compara si es la misma nota ignorando la octava (usando módulo 12)
+    return (midi_detectada % 12) == (midi_esperada % 12)
 
 
 # =====================================================================
@@ -975,18 +1000,24 @@ class WynikApp(MDApp):
             return
 
         nota_info = self.notas_partitura[self.indice_actual]
-        self.nota_esperada = nota_info["nombre"]
+
+        # --- AJUSTE PARA COINCIDIR CON EL PENTAGRAMA ---
+        # El archivo pide un "La", pero el pentagrama dibuja un "Mi" (desfase de +7 semitonos).
+        # Transformamos la nota esperada sumando 7 semitonos para que el Label 
+        # y el micrófono te pidan exactamente lo que estás viendo en la pantalla.
+        try:
+            midi_original = librosa.note_to_midi(nota_info["nombre"])
+            self.nota_esperada = librosa.midi_to_note(midi_original + 7).replace('♯', '#')
+        except Exception:
+            self.nota_esperada = nota_info["nombre"]
+
         nombre_mostrado = nombre_para_mostrar(self.nota_esperada, self.notacion_solfeo)
         self._actualizar_label_estado(f"Nota esperada: {nombre_mostrado}", (0, 0, 0, 1))
 
         if self.seguir_de_largo:
-            # "Seguir de largo al fallar" ACTIVO: la partitura avanza sola según el tempo,
-            # sin importar si tocaste bien o mal la nota anterior.
             segundos_por_beat = 60.0 / self.bpm
             duracion_segundos = max(nota_info["duracion_beats"] * segundos_por_beat, 0.15)
             Clock.schedule_once(self._siguiente_nota, duracion_segundos)
-        # Si está DESACTIVADO, no programamos ningún avance por tiempo: la partitura se
-        # queda esperando aquí hasta que detectemos la nota correcta (ver _procesar_nota_detectada).
 
     def _avanzar(self):
         self.indice_actual += 1
