@@ -1,6 +1,5 @@
 import json
 import os
-import struct
 import wave
 
 import numpy as np
@@ -15,15 +14,14 @@ from kivy.graphics import Color, Ellipse, Line
 from kivy.lang import Builder
 from kivy.properties import BooleanProperty, ListProperty, NumericProperty, StringProperty
 from kivy.core.window import Window
-from kivy.uix.screenmanager import ScreenManager, Screen
+from kivy.uix.screenmanager import Screen
 from kivy.uix.widget import Widget
 from kivy.uix.modalview import ModalView
 from kivy.uix.filechooser import FileChooserListView
 from kivy.uix.boxlayout import BoxLayout
 
 from kivymd.app import MDApp
-from kivymd.uix.button import MDButton, MDButtonText, MDIconButton
-from kivymd.uix.slider import MDSlider
+from kivymd.uix.button import MDButton, MDButtonText
 from kivymd.uix.list import (
     MDListItem,
     MDListItemHeadlineText,
@@ -38,6 +36,31 @@ Window.size = (360, 640)
 # =====================================================================
 #  SINTETIZADOR Y CARGA DE PARTITURAS
 # =====================================================================
+
+def cargar_partitura(ruta_archivo):
+    """
+    Lee un archivo MusicXML y devuelve una lista de diccionarios con las notas.
+    """
+    partitura = converter.parse(ruta_archivo)
+    notas_planas = partitura.flatten().notes
+
+    resultado = []
+    for elemento in notas_planas:
+        if isinstance(elemento, note.Note):
+            resultado.append({
+                "nombre": elemento.nameWithOctave,
+                "offset_beats": float(elemento.offset),
+                "duracion_beats": float(elemento.quarterLength),
+            })
+        elif isinstance(elemento, chord.Chord):
+            nota_top = elemento.notes[-1]
+            resultado.append({
+                "nombre": nota_top.nameWithOctave,
+                "offset_beats": float(elemento.offset),
+                "duracion_beats": float(elemento.quarterLength),
+            })
+    return resultado
+
 
 def generar_audio_guia(notas_partitura, bpm, ruta_salida="temp_guia.wav", sample_rate=22050):
     """
@@ -63,7 +86,6 @@ def generar_audio_guia(notas_partitura, bpm, ruta_salida="temp_guia.wav", sample
         try:
             freq = librosa.note_to_hz(item["nombre"])
             t = np.linspace(0, duracion_sec, num_samples, False)
-            # Genera tono senoidal suave con desvanecimiento gradual (decay)
             onda = 0.5 * np.sin(2 * np.pi * freq * t) * np.exp(-3 * t / max(duracion_sec, 0.001))
         except Exception:
             onda = np.zeros(num_samples)
@@ -74,7 +96,6 @@ def generar_audio_guia(notas_partitura, bpm, ruta_salida="temp_guia.wav", sample
             buffer_audio[sample_actual:fin_sample] += onda[:len_copia]
         sample_actual = fin_sample
 
-    # Normalización para evitar saturación
     max_val = np.max(np.abs(buffer_audio))
     if max_val > 1.0:
         buffer_audio = buffer_audio / max_val
@@ -88,31 +109,6 @@ def generar_audio_guia(notas_partitura, bpm, ruta_salida="temp_guia.wav", sample
         wf.writeframes(buffer_int16.tobytes())
 
     return ruta_salida
-
-
-def cargar_partitura(ruta_archivo):
-    """
-    Lee un archivo MusicXML y devuelve una lista de diccionarios con las notas.
-    """
-    partitura = converter.parse(ruta_archivo)
-    notas_planas = partitura.flatten().notes
-
-    resultado = []
-    for elemento in notas_planas:
-        if isinstance(elemento, note.Note):
-            resultado.append({
-                "nombre": elemento.nameWithOctave,
-                "offset_beats": float(elemento.offset),
-                "duracion_beats": float(elemento.quarterLength),
-            })
-        elif isinstance(elemento, chord.Chord):
-            nota_top = elemento.notes[-1]
-            resultado.append({
-                "nombre": nota_top.nameWithOctave,
-                "offset_beats": float(elemento.offset),
-                "duracion_beats": float(elemento.quarterLength),
-            })
-    return resultado
 
 
 def abrir_selector_de_archivo(callback_ruta_seleccionada):
@@ -182,7 +178,7 @@ def guardar_historial(historial):
 # =====================================================================
 
 SAMPLE_RATE = 22050
-BLOCK_SIZE = 2048
+BLOCK_SIZE = 4096  # Búfer amplio para mejorar precisión en notas graves (E2, F#2)
 
 
 def frecuencia_a_nota(frecuencia_hz):
@@ -206,48 +202,35 @@ class DetectorDeNotas:
 
     def _procesar_bloque(self, indata, frames, time_info, status):
         audio = indata[:, 0]
-        # 1. Filtro de ruido un poco más estricto
+        
+        # 1. Filtro RMS para ignorar silencios
         rms = np.sqrt(np.mean(audio**2))
-        if rms < 0.234:  # Si sigue sensible, sube este valor a 0.08
+        if rms < 0.15:
             self._ultima_nota = None
             return
 
-        # 2. Detección instantánea con FFT (reemplaza a librosa.pyin)
-        fft_data = np.fft.rfft(audio)
-        fft_freqs = np.fft.rfftfreq(len(audio), 1.0 / self.samplerate)
-        magnitudes = np.abs(fft_data)
-        
-        # Ignorar frecuencias menores a 65Hz (ruido de fondo o golpes)
-        magnitudes[fft_freqs < 65.0] = 0 
+        # 2. Detección por pYIN
+        try:
+            f0, voiced_flag, _ = librosa.pyin(
+                audio,
+                fmin=librosa.note_to_hz("E2"),  # Mi2 (Guitarra grave)
+                fmax=librosa.note_to_hz("E5"),  # Mi5 (Guitarra aguda)
+                sr=self.samplerate,
+                frame_length=len(audio),
+            )
 
-        peak_idx = np.argmax(magnitudes)
-        frecuencia = float(fft_freqs[peak_idx])
+            frecuencias_validas = f0[voiced_flag]
+            if len(frecuencias_validas) == 0:
+                return
 
-        # 3. Validar que la frecuencia sea de un instrumento (C2 a C7 aprox)
-        if 65.0 < frecuencia < 2100.0:
+            frecuencia = float(np.nanmedian(frecuencias_validas))
             nota = frecuencia_a_nota(frecuencia)
+
             if nota and nota != self._ultima_nota:
                 self._ultima_nota = nota
                 self.callback_nota(nota, frecuencia)
-
-        f0, voiced_flag, _ = librosa.pyin(
-            audio,
-            fmin=librosa.note_to_hz("C2"),
-            fmax=librosa.note_to_hz("C7"),
-            sr=self.samplerate,
-            frame_length=BLOCK_SIZE,
-        )
-
-        frecuencias_validas = f0[voiced_flag]
-        if len(frecuencias_validas) == 0:
-            return
-
-        frecuencia = float(np.nanmedian(frecuencias_validas))
-        nota = frecuencia_a_nota(frecuencia)
-
-        if nota and nota != self._ultima_nota:
-            self._ultima_nota = nota
-            self.callback_nota(nota, frecuencia)
+        except Exception as error:
+            print(f"[DetectorDeNotas] Error procesando bloque: {error}")
 
     def iniciar(self):
         try:
@@ -276,32 +259,28 @@ class DetectorDeNotas:
 
 
 def nota_coincide(nota_detectada, nota_esperada, tolerancia_semitonos=0):
-    if nota_detectada is None:
+    if nota_detectada is None or nota_esperada is None:
         return False
-    midi_detectada = round(librosa.note_to_midi(nota_detectada))
-    midi_esperada = round(librosa.note_to_midi(nota_esperada))
-    
-    # Compara si es la misma nota ignorando la octava (usando módulo 12)
-    return (midi_detectada % 12) == (midi_esperada % 12)
+    try:
+        midi_detectada = round(librosa.note_to_midi(nota_detectada))
+        midi_esperada = round(librosa.note_to_midi(nota_esperada))
+        return (midi_detectada % 12) == (midi_esperada % 12)
+    except Exception:
+        return False
 
 
 # =====================================================================
-#  NOTACIÓN: nombres de nota en notación inglesa vs. solfeo (Do-Re-Mi)
+#  NOTACIÓN MUSICAL
 # =====================================================================
 
 _LETRA_A_SOLFEO = {"C": "Do", "D": "Re", "E": "Mi", "F": "Fa", "G": "Sol", "A": "La", "B": "Si"}
 
 
 def nombre_para_mostrar(nombre_nota, usar_solfeo):
-    """
-    Convierte 'E4' -> 'Mi4', 'F#4' -> 'Fa#4', etc. Si usar_solfeo es False,
-    devuelve el nombre tal cual (notación inglesa, la que usa music21/librosa
-    internamente para todas las comparaciones).
-    """
     if not usar_solfeo or not nombre_nota:
         return nombre_nota
     letra = nombre_nota[0]
-    resto = nombre_nota[1:]  # alteración (# / -) y octava, se mantienen igual
+    resto = nombre_nota[1:]
     return _LETRA_A_SOLFEO.get(letra, letra) + resto
 
 
@@ -318,7 +297,7 @@ def paso_diatonico(nombre_nota):
     return octava * 7 + _LETRA_A_PASO[letra]
 
 
-PASO_E4 = paso_diatonico("E4")
+PASO_B4 = paso_diatonico("B4")  # Línea 3 (central) en Clave de Sol es Si4 (B4)
 
 
 class PartituraWidget(Widget):
@@ -339,6 +318,7 @@ class PartituraWidget(Widget):
 
         with self.canvas:
             Color(0, 0, 0, 1)
+            # Dibujar las 5 líneas del pentagrama
             for i in range(5):
                 y = centro_y + (i - 2) * self.ESPACIO_ENTRE_LINEAS
                 Line(points=[self.x + 20, y, self.right - 20, y], width=1.2)
@@ -362,13 +342,15 @@ class PartituraWidget(Widget):
                 x = self.x + 40 + offset * paso_x
 
                 paso = paso_diatonico(nota_info["nombre"])
-                diferencia_pasos = paso - PASO_E4
+                diferencia_pasos = paso - PASO_B4  # Referenciado al centro (Si4)
                 y = centro_y + diferencia_pasos * (self.ESPACIO_ENTRE_LINEAS / 2)
 
+                # Líneas adicionales si la nota está fuera de las 5 líneas
                 if (diferencia_pasos % 2 == 0) and (y < y_min_pentagrama or y > y_max_pentagrama):
                     Color(0, 0, 0, 1)
                     Line(points=[x - 8, y, x + 8, y], width=1.2)
 
+                # Colores según el estado
                 estado = app.estado_notas[indice_real] if indice_real < len(app.estado_notas) else None
                 if estado is True:
                     Color(0.2, 0.7, 0.2, 1)
@@ -379,7 +361,15 @@ class PartituraWidget(Widget):
                 else:
                     Color(0, 0, 0, 1)
 
+                # Cabeza de la nota
                 Ellipse(pos=(x - 6, y - 5), size=(12, 10))
+
+                # Plica (palito vertical)
+                largo_plica = 28
+                if y < centro_y:
+                    Line(points=[x + 5, y, x + 5, y + largo_plica], width=1.2)
+                else:
+                    Line(points=[x - 5, y, x - 5, y - largo_plica], width=1.2)
 
 
 # =====================================================================
@@ -655,7 +645,6 @@ ScreenManager:
                 size_hint_y: None
                 height: "30dp"
 
-            # --- Panel Multimedia de Control de Audio ---
             MDBoxLayout:
                 orientation: 'vertical'
                 size_hint_y: None
@@ -663,7 +652,6 @@ ScreenManager:
                 padding: ["10dp", "5dp", "10dp", "5dp"]
                 spacing: "5dp"
 
-                # Línea de Progreso y Tiempo
                 MDBoxLayout:
                     orientation: 'horizontal'
                     size_hint_y: None
@@ -695,7 +683,6 @@ ScreenManager:
                         font_style: "Label"
                         role: "small"
 
-                # Botones de Control de Reproducción (-5s | Play/Pausa | Stop | +5s)
                 MDBoxLayout:
                     orientation: 'horizontal'
                     size_hint_y: None
@@ -730,7 +717,6 @@ ScreenManager:
                     Widget:
                         size_hint_x: 0.1
 
-                # Slider de Volumen
                 MDBoxLayout:
                     orientation: 'horizontal'
                     size_hint_y: None
@@ -785,7 +771,7 @@ class WynikApp(MDApp):
     nombre_partitura = StringProperty("(Sin partitura)")
     historial_partituras = ListProperty([])
 
-    # Propiedades para el reproductor de audio
+    # Propiedades reproductor de audio
     reproduciendo_audio = BooleanProperty(False)
     volumen_audio = NumericProperty(0.8)
     posicion_audio_actual = NumericProperty(0)
@@ -1000,16 +986,7 @@ class WynikApp(MDApp):
             return
 
         nota_info = self.notas_partitura[self.indice_actual]
-
-        # --- AJUSTE PARA COINCIDIR CON EL PENTAGRAMA ---
-        # El archivo pide un "La", pero el pentagrama dibuja un "Mi" (desfase de +7 semitonos).
-        # Transformamos la nota esperada sumando 7 semitonos para que el Label 
-        # y el micrófono te pidan exactamente lo que estás viendo en la pantalla.
-        try:
-            midi_original = librosa.note_to_midi(nota_info["nombre"])
-            self.nota_esperada = librosa.midi_to_note(midi_original + 7).replace('♯', '#')
-        except Exception:
-            self.nota_esperada = nota_info["nombre"]
+        self.nota_esperada = nota_info["nombre"]
 
         nombre_mostrado = nombre_para_mostrar(self.nota_esperada, self.notacion_solfeo)
         self._actualizar_label_estado(f"Nota esperada: {nombre_mostrado}", (0, 0, 0, 1))
@@ -1024,9 +1001,8 @@ class WynikApp(MDApp):
         self._mostrar_nota_actual()
 
     def _siguiente_nota(self, dt):
-        # Solo se llama vía Clock cuando seguir_de_largo está activo.
         if self.indice_actual < len(self.estado_notas) and self.estado_notas[self.indice_actual] is None:
-            self._marcar_estado_nota(self.indice_actual, False)  # se pasó el tiempo sin tocarla (o la tocó mal)
+            self._marcar_estado_nota(self.indice_actual, False)
         self._avanzar()
 
     def _marcar_estado_nota(self, indice, es_correcta):
@@ -1049,14 +1025,10 @@ class WynikApp(MDApp):
         if es_correcta:
             self._actualizar_label_estado(f"✓ {nombre_tocado} correcta", (0.2, 0.7, 0.2, 1))
             if not self.seguir_de_largo:
-                # Con "seguir de largo" DESACTIVADO, tocar la nota correcta es lo único
-                # que hace avanzar la partitura (se frena hasta que aciertas).
                 self._avanzar()
         else:
             texto = f"✗ tocaste {nombre_tocado}, esperada {nombre_esperado}"
             self._actualizar_label_estado(texto, (0.8, 0.1, 0.1, 1))
-            # Con "seguir de largo" desactivado, simplemente no avanzamos: se queda
-            # esperando en la misma nota hasta que la toques bien.
 
     def _actualizar_label_estado(self, texto, color):
         pantalla = self.root.get_screen('interprete')

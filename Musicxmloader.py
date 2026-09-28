@@ -73,9 +73,3 @@ def abrir_selector_de_archivo(callback_ruta_seleccionada):
         on_selection=_on_selection,
     )
 
-
-if __name__ == "__main__":
-    # Prueba rápida por consola: reemplaza por la ruta de un .xml de prueba
-    notas = cargar_partitura("mi_partitura.xml")
-    for n in notas[:10]:
-        print(n)
