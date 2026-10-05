@@ -1,0 +1,356 @@
+ScreenManager:
+    MenuScreen:
+    ElegirPartituraScreen:
+    AjustesInicioScreen:
+    InterpreteScreen:
+
+<MenuScreen>:
+    name: 'menu'
+    MDBoxLayout:
+        orientation: 'vertical'
+        theme_bg_color: "Custom"
+        md_bg_color: 0.1, 0.1, 0.1, 1
+
+        MDTopAppBar:
+            type: "small"
+            MDTopAppBarTitle:
+                text: "Wynik"
+                halign: "center"
+
+        MDGridLayout:
+            cols: 3
+            padding: "20dp"
+            spacing: "15dp"
+            pos_hint: {"center_x": .5, "center_y": .5}
+            size_hint_y: None
+            height: self.minimum_height
+
+            MDBoxLayout:
+                orientation: 'vertical'
+                size_hint_y: None
+                height: "100dp"
+                MDLabel:
+                    text: "Subir\nPartitura"
+                    halign: "center"
+                    theme_text_color: "Custom"
+                    text_color: 1, 1, 1, 1
+                    font_style: "Label"
+                    role: "small"
+                MDIconButton:
+                    icon: "upload"
+                    style: "filled"
+                    theme_bg_color: "Custom"
+                    md_bg_color: 1, 1, 1, 1
+                    theme_icon_color: "Custom"
+                    icon_color: 0, 0, 0, 1
+                    icon_size: "48sp"
+                    pos_hint: {"center_x": .5}
+                    on_release: app.subir_partitura()
+
+            MDBoxLayout:
+                orientation: 'vertical'
+                size_hint_y: None
+                height: "100dp"
+                MDLabel:
+                    text: "Elegir\nPartitura"
+                    halign: "center"
+                    theme_text_color: "Custom"
+                    text_color: 1, 1, 1, 1
+                    font_style: "Label"
+                    role: "small"
+                MDIconButton:
+                    icon: "music-note-eighth"
+                    style: "filled"
+                    theme_bg_color: "Custom"
+                    md_bg_color: 1, 1, 1, 1
+                    theme_icon_color: "Custom"
+                    icon_color: 0, 0, 0, 1
+                    icon_size: "48sp"
+                    pos_hint: {"center_x": .5}
+                    on_release: app.root.current = 'elegir_partitura'
+
+            MDBoxLayout:
+                orientation: 'vertical'
+                size_hint_y: None
+                height: "100dp"
+                MDLabel:
+                    text: "Ajustes"
+                    halign: "center"
+                    theme_text_color: "Custom"
+                    text_color: 1, 1, 1, 1
+                    font_style: "Label"
+                    role: "small"
+                MDIconButton:
+                    icon: "cog"
+                    style: "filled"
+                    theme_bg_color: "Custom"
+                    md_bg_color: 1, 1, 1, 1
+                    theme_icon_color: "Custom"
+                    icon_color: 0, 0, 0, 1
+                    icon_size: "48sp"
+                    pos_hint: {"center_x": .5}
+
+        Widget:
+            size_hint_y: 1
+
+<ElegirPartituraScreen>:
+    name: 'elegir_partitura'
+    MDBoxLayout:
+        orientation: 'vertical'
+
+        MDTopAppBar:
+            type: "small"
+            MDTopAppBarLeadingButtonContainer:
+                MDActionTopAppBarButton:
+                    icon: "arrow-left"
+                    on_release: app.change_screen('menu')
+            MDTopAppBarTitle:
+                text: "Menú de canciones"
+
+        ScrollView:
+            MDList:
+                id: song_list
+
+<AjustesInicioScreen>:
+    name: 'ajustes_inicio'
+    MDBoxLayout:
+        orientation: 'vertical'
+        theme_bg_color: "Custom"
+        md_bg_color: 0.1, 0.1, 0.1, 1
+
+        MDTopAppBar:
+            type: "small"
+            MDTopAppBarLeadingButtonContainer:
+                MDActionTopAppBarButton:
+                    icon: "arrow-left"
+                    on_release: app.change_screen('elegir_partitura')
+            MDTopAppBarTitle:
+                text: "Ajustes de inicio"
+
+        MDBoxLayout:
+            orientation: 'horizontal'
+            padding: "20dp"
+            spacing: "15dp"
+            size_hint_y: 0.6
+
+            MDCard:
+                orientation: 'vertical'
+                style: "outlined"
+                theme_bg_color: "Custom"
+                md_bg_color: 0, 0, 0, 1
+                line_color: 1, 1, 1, 1
+                padding: "10dp"
+                radius: [15, 15, 15, 15]
+
+                MDLabel:
+                    text: "Seguir de largo al\nfallar"
+                    halign: "center"
+                    theme_text_color: "Custom"
+                    text_color: 1, 1, 1, 1
+
+                MDCheckbox:
+                    size_hint: None, None
+                    size: "48dp", "48dp"
+                    pos_hint: {'center_x': .5, 'center_y': .5}
+                    active: app.seguir_de_largo
+                    on_active: app.seguir_de_largo = self.active
+
+            MDCard:
+                orientation: 'vertical'
+                style: "outlined"
+                theme_bg_color: "Custom"
+                md_bg_color: 0, 0, 0, 1
+                line_color: 1, 1, 1, 1
+                padding: "10dp"
+                radius: [15, 15, 15, 15]
+
+                MDLabel:
+                    text: "Ver notas en\nDo-Re-Mi"
+                    halign: "center"
+                    theme_text_color: "Custom"
+                    text_color: 1, 1, 1, 1
+
+                MDCheckbox:
+                    size_hint: None, None
+                    size: "48dp", "48dp"
+                    pos_hint: {'center_x': .5, 'center_y': .5}
+                    active: app.notacion_solfeo
+                    on_active: app.notacion_solfeo = self.active
+
+            MDCard:
+                orientation: 'vertical'
+                style: "outlined"
+                theme_bg_color: "Custom"
+                md_bg_color: 0, 0, 0, 1
+                line_color: 1, 1, 1, 1
+                padding: "10dp"
+                radius: [15, 15, 15, 15]
+
+                MDLabel:
+                    text: "Tempo\nBPM"
+                    halign: "center"
+                    theme_text_color: "Custom"
+                    text_color: 1, 1, 1, 1
+                    size_hint_y: 0.3
+
+                MDBoxLayout:
+                    orientation: 'horizontal'
+                    size_hint_y: 0.7
+                    MDIconButton:
+                        icon: "arrow-left-bold"
+                        theme_icon_color: "Custom"
+                        icon_color: 0.5, 0.8, 0.2, 1
+                        on_release: app.cambiar_bpm(-5)
+                    MDLabel:
+                        text: str(app.bpm)
+                        halign: "center"
+                        theme_text_color: "Custom"
+                        text_color: 1, 1, 1, 1
+                        theme_bg_color: "Custom"
+                        md_bg_color: 0.2, 0.2, 0.2, 1
+                    MDIconButton:
+                        icon: "arrow-right-bold"
+                        theme_icon_color: "Custom"
+                        icon_color: 0.5, 0.8, 0.2, 1
+                        on_release: app.cambiar_bpm(5)
+
+        MDFloatLayout:
+            size_hint_y: 0.4
+            MDButton:
+                style: "filled"
+                theme_bg_color: "Custom"
+                md_bg_color: 0.6, 0.9, 0.4, 1
+                pos_hint: {"right": 0.9, "bottom": 0.9}
+                on_release:
+                    app.iniciar_interpretacion()
+                    app.root.current = 'interprete'
+                MDButtonText:
+                    text: "Iniciar"
+                    theme_text_color: "Custom"
+                    text_color: 0, 0, 0, 1
+
+<InterpreteScreen>:
+    name: 'interprete'
+    MDBoxLayout:
+        orientation: 'vertical'
+        theme_bg_color: "Custom"
+        md_bg_color: 1, 1, 1, 1
+
+        MDTopAppBar:
+            type: "small"
+            MDTopAppBarLeadingButtonContainer:
+                MDActionTopAppBarButton:
+                    icon: "arrow-left"
+                    on_release:
+                        app.detener_audio()
+                        app.change_screen('ajustes_inicio')
+            MDTopAppBarTitle:
+                text: app.nombre_partitura
+
+        MDBoxLayout:
+            orientation: 'vertical'
+            padding: "10dp"
+            spacing: "5dp"
+
+            PartituraWidget:
+                id: partitura_widget
+                size_hint_y: 0.45
+
+            MDLabel:
+                id: label_estado
+                text: "Esperando nota..."
+                halign: "center"
+                theme_text_color: "Custom"
+                text_color: 0, 0, 0, 1
+                bold: True
+                size_hint_y: None
+                height: "30dp"
+
+            MDBoxLayout:
+                orientation: 'vertical'
+                size_hint_y: None
+                height: "170dp"
+                padding: ["10dp", "5dp", "10dp", "5dp"]
+                spacing: "5dp"
+
+                MDBoxLayout:
+                    orientation: 'horizontal'
+                    size_hint_y: None
+                    height: "30dp"
+                    spacing: "5dp"
+
+                    MDLabel:
+                        text: app.tiempo_actual_str
+                        theme_text_color: "Custom"
+                        text_color: 0, 0, 0, 1
+                        size_hint_x: None
+                        width: "45dp"
+                        font_style: "Label"
+                        role: "small"
+
+                    MDSlider:
+                        id: slider_progreso
+                        min: 0
+                        max: app.duracion_audio_total if app.duracion_audio_total > 0 else 1
+                        value: app.posicion_audio_actual
+                        on_value: app.cambiar_posicion_audio(self.value)
+
+                    MDLabel:
+                        text: app.duracion_total_str
+                        theme_text_color: "Custom"
+                        text_color: 0, 0, 0, 1
+                        size_hint_x: None
+                        width: "45dp"
+                        font_style: "Label"
+                        role: "small"
+
+                MDBoxLayout:
+                    orientation: 'horizontal'
+                    size_hint_y: None
+                    height: "60dp"
+                    spacing: "10dp"
+                    pos_hint: {"center_x": .5}
+
+                    Widget:
+                        size_hint_x: 0.1
+
+                    MDIconButton:
+                        icon: "rewind-5"
+                        style: "standard"
+                        on_release: app.adelantar_retroceder_audio(-5)
+
+                    MDIconButton:
+                        icon: "play" if not app.reproduciendo_audio else "pause"
+                        style: "filled"
+                        icon_size: "32sp"
+                        on_release: app.toggle_reproduccion_audio()
+
+                    MDIconButton:
+                        icon: "stop"
+                        style: "standard"
+                        on_release: app.detener_audio()
+
+                    MDIconButton:
+                        icon: "fast-forward-5"
+                        style: "standard"
+                        on_release: app.adelantar_retroceder_audio(5)
+
+                    Widget:
+                        size_hint_x: 0.1
+
+                MDBoxLayout:
+                    orientation: 'horizontal'
+                    size_hint_y: None
+                    height: "35dp"
+                    spacing: "5dp"
+
+                    MDIconButton:
+                        icon: "volume-high" if app.volumen_audio > 0 else "volume-off"
+                        style: "standard"
+                        icon_size: "20sp"
+
+                    MDSlider:
+                        min: 0.0
+                        max: 1.0
+                        value: app.volumen_audio
+                        on_value: app.ajustar_volumen(self.value)

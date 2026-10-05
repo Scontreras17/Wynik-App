@@ -157,10 +157,75 @@ Verás tres botones:
 
 ---
 
-## 6. Resumen rápido (para quien ya instaló todo antes)
+## 6. Arquitectura modular del proyecto
+
+El proyecto está diseñado bajo una arquitectura modular limpia y desacoplada, separando la interfaz de usuario, la lógica de negocio y las estructuras de datos:
+
+```text
+Wynik-App/
+├── main.py                     # Punto de entrada ultraligero (< 50 líneas)
+├── modelos/                    # Capa de Modelo (estructuras de datos del dominio)
+│   ├── __init__.py
+│   ├── nota.py                 # Entidad Nota
+│   ├── partitura.py            # Entidad Partitura
+│   └── historial.py            # Entidad EntradaHistorial
+├── servicios/                  # Capa de Servicio (funciones y lógica SIN Kivy/KivyMD)
+│   ├── __init__.py
+│   ├── partitura_service.py    # Carga y parseo de archivos MusicXML (.xml, .musicxml, .mxl) con music21
+│   ├── audio_service.py        # Síntesis matemática del audio guía WAV y formato de tiempos
+│   ├── detector_service.py     # Captura de micrófono y detección de tono en tiempo real (pYIN)
+│   ├── historial_service.py    # Persistencia y gestión del archivo JSON de partituras recientes
+│   └── notacion_service.py     # Cálculo de pasos diatónicos, solfeo y validación de notas
+├── vistas/                     # Capa de Vista (interfaz gráfica Kivy / KivyMD)
+│   ├── __init__.py
+│   ├── app.py                  # Controlador global de la aplicación (WynikApp)
+│   ├── wynik.kv                # Definición declarativa de estilos y layout KV
+│   ├── dialogs.py              # Diálogo modal selector de archivos nativo
+│   ├── screens/                # Pantallas individuales de la aplicación
+│   │   ├── __init__.py
+│   │   ├── menu_screen.py              # Pantalla de menú principal
+│   │   ├── elegir_partitura_screen.py  # Pantalla de selección del historial
+│   │   ├── ajustes_inicio_screen.py    # Pantalla de configuración de tempo y opciones
+│   │   └── interprete_screen.py        # Pantalla de interpretación y práctica
+│   └── widgets/                # Widgets gráficos personalizados
+│       ├── __init__.py
+│       └── partitura_widget.py # Dibujo dinámico del pentagrama sobre el canvas
+├── Musicxmloader.py            # Wrapper de compatibilidad hacia atrás
+├── PitchListener.py            # Wrapper de compatibilidad hacia atrás
+├── historial_partituras.json   # Archivo de almacenamiento del historial
+└── requirements.txt            # Dependencias del proyecto
+```
+
+### Responsabilidades por módulo
+
+1. **`servicios/` (Lógica de negocio independiente del framework UI)**:
+   - **Todas las funciones y algoritmos que no hacen uso de Kivy ni KivyMD residen aquí.**
+   - Permite probar la lógica musical, la síntesis de audio, el procesado de archivos MusicXML y el algoritmo pYIN sin necesidad de levantar ventanas gráficas ni servidores de display (OpenGL).
+   - `partitura_service.py`: Carga y analiza los pentagramas con `music21`.
+   - `audio_service.py`: Genera los tonos de síntesis senoidal en WAV y formatea tiempos.
+   - `detector_service.py`: Controla la captura por micrófono mediante `sounddevice` y el análisis tonal con `librosa`.
+   - `notacion_service.py`: Convierte nombres de notas a solfeo (Do-Re-Mi), calcula alturas diatónicas para el pentagrama y verifica aciertos con tolerancia musical.
+   - `historial_service.py`: Maneja la lectura y guardado atómico en `historial_partituras.json`.
+
+2. **`vistas/` (Interfaz de usuario Kivy y KivyMD)**:
+   - Contiene **cada una de las pantallas** del sistema en la subcarpeta `screens/` (`MenuScreen`, `ElegirPartituraScreen`, `AjustesInicioScreen`, `InterpreteScreen`).
+   - Aloja el widget visual [`PartituraWidget`](vistas/widgets/partitura_widget.py) para el renderizado del pentagrama interactivo.
+   - Mantiene la declaración visual en [`vistas/wynik.kv`](vistas/wynik.kv).
+   - Centraliza el ciclo de vida y la orquestación de la UI en [`vistas/app.py`](vistas/app.py) (`WynikApp`).
+
+3. **`modelos/` (Entidades de dominio)**:
+   - Representaciones tipadas de datos (`Nota`, `Partitura`, `EntradaHistorial`) que desacoplan el almacenamiento de la presentación.
+
+4. **`main.py` (Punto de entrada)**:
+   - Archivo conciso de menos de 50 líneas cuya única responsabilidad es inicializar la ventana y ejecutar `WynikApp`.
+
+---
+
+## 7. Resumen rápido (para quien ya instaló todo antes)
 
 ```bash
 cd Wynik
 source venv/bin/activate      # o venv\Scripts\activate en Windows
 python main.py
 ```
+

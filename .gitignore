@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Entornos virtuales
+venv/
+env/
+ENV/
+entorno_Wynik/
+
+# Audio temporal y logs
+temp_guia.wav
+*.wav
+.kivy/
+
+# IDEs
+.idea/
+.vscode/
